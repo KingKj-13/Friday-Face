@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Friday Hologram Face</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one full-screen projection bay, the face centered, a thin console docked at the bottom. Single dark look by choice. */
+:root {
+  --void: #03070c;
+  --bay: #0a1622;
+  --holo: #8fcff2;
+  --holo-dim: #4f8fb5;
+  --ink: #d8eefb;
+  --line: rgba(143, 207, 242, 0.22);
+  --f-display: "Chakra Petch", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: radial-gradient(ellipse at 50% 40%, var(--bay), var(--void) 70%);
+  background-color: var(--void);
+  color: var(--ink);
+  font-family: var(--f-mono);
+  overflow: hidden;
+}
+#stage { position: fixed; inset: 0; }
+canvas { display: block; }
+.hud {
+  position: fixed; left: 0; right: 0;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  pointer-events: none;
+}
+.top { top: 0; padding-block: calc(14px + env(safe-area-inset-top, 0px)) 0; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.name { font-family: var(--f-display); font-weight: 600; letter-spacing: 0.32em; font-size: 15px; color: var(--holo); }
+.state { font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--holo-dim); display: flex; gap: 16px; }
+.state b { color: var(--holo); font-weight: 500; display: inline-block; min-width: 3ch; }
+.bottom { bottom: 0; padding-block: 0 calc(14px + env(safe-area-inset-bottom, 0px)); }
+.console {
+  pointer-events: auto;
+  max-width: 760px; margin: 0 auto;
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+  background: rgba(6, 16, 26, 0.72);
+  border: 1px solid var(--line);
+  padding: 10px;
+  backdrop-filter: blur(6px);
+}
+.console input[type=text] {
+  flex: 1 1 220px; min-width: 0;
+  background: transparent; border: 1px solid var(--line); color: var(--ink);
+  font: 13px var(--f-mono); padding: 9px 10px;
+}
+.console input[type=text]::placeholder { color: var(--holo-dim); }
+button, .file {
+  font: 600 12px var(--f-display); letter-spacing: 0.12em; text-transform: uppercase;
+  background: rgba(143, 207, 242, 0.08); color: var(--holo);
+  border: 1px solid var(--line); padding: 9px 12px; cursor: pointer;
+}
+button:hover, .file:hover { background: rgba(143, 207, 242, 0.18); }
+button:focus-visible, .file:focus-within, input:focus-visible { outline: 1px solid var(--holo); outline-offset: 2px; }
+.file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
+.glow { display: flex; align-items: center; gap: 8px; font: 600 11px var(--f-display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--holo-dim); }
+.glow input { width: 110px; accent-color: var(--holo); }
+.note { max-width: 760px; margin: 8px auto 0; font-size: 10.5px; color: var(--holo-dim); line-height: 1.5; pointer-events: auto; }
+.note a { color: var(--holo-dim); }
+#err { position: fixed; inset: 40% 16px auto; text-align: center; color: var(--holo); font-size: 13px; }
+</style>
+
+</head>
+<body>
+<div id="stage"></div>
+<div class="hud top">
+  <div class="name">F.R.I.D.A.Y.</div>
+  <div class="state"><span>Mouth <b id="vis">–</b></span><span>Status <b id="status">Loading</b></span></div>
+</div>
+<div class="hud bottom">
+  <div class="console">
+    <input id="say" type="text" value="Good evening boss. All systems are online, and the suit is ready." aria-label="Text for Friday to say">
+    <button id="speak" type="button">Speak</button>
+    <label class="file">Play audio<input id="audio" type="file" accept="audio/*"></label>
+    <label class="glow" for="bright">Glow <input id="bright" type="range" min="0.2" max="1.5" step="0.05" value="0.6"></label>
+  </div>
+  <p class="note">Drag to rotate. "Speak" reads your text and shapes the mouth from its letters and sounds. "Play audio" lip-syncs any voice file from its frequencies. Face model: “facecap” by Bannaflak, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>, via the three.js examples.</p>
+</div>
+<div id="err" hidden></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const statusEl = document.getElementById('status');
+const visEl = document.getElementById('vis');
+const setStatus = s => statusEl.textContent = s;
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setClearColor(0x000000, 0);
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
+function fit() {
+  const w = stage.clientWidth || innerWidth, h = stage.clientHeight || innerHeight;
+  renderer.setSize(w, h);
+  camera.aspect = w / h;
+  // Keep the whole head in view on tall, narrow screens.
+  camera.fov = w / h < 0.75 ? 35 / Math.max(0.55, w / h / 0.75) : 35;
+  camera.updateProjectionMatrix();
+}
+fit();
+new ResizeObserver(fit).observe(stage);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.enablePan = false;
+controls.minPolarAngle = Math.PI * 0.3; controls.maxPolarAngle = Math.PI * 0.7;
+
+
+const uniforms = {
+  uTime: { value: 0 },
+  uColor: { value: new THREE.Color(0x6fb8e6) },
+  uGlitch: { value: 0 },
+  uBright: { value: 0.6 },
+  uLipColor: { value: new THREE.Color(0xb9d8ff) },
+  uFadeLow: { value: -1000 },
+  uFadeHigh: { value: -999 },
+};
+
+// Hologram surface: fresnel rim, scanlines, speckle, flicker and horizontal glitch bands.
+const holoMat = new THREE.ShaderMaterial({
+  uniforms,
+  transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  blending: THREE.AdditiveBlending,
+  vertexShader: /* glsl */`
+    #include <common>
+    #include <morphtarget_pars_vertex>
+    uniform float uTime; uniform float uGlitch;
+    attribute float aLip;
+    varying vec3 vN; varying vec3 vView; varying vec3 vWorld; varying float vLip;
+    void main() {
+      #include <beginnormal_vertex>
+      #include <morphnormal_vertex>
+      #include <defaultnormal_vertex>
+      #include <begin_vertex>
+      #include <morphtarget_vertex>
+      vec4 wp = modelMatrix * vec4(transformed, 1.0);
+      float band = step(0.985, fract(sin(floor(wp.y * 40.0) + floor(uTime * 8.0)) * 43758.5));
+      wp.x += band * uGlitch * 0.02;
+      vWorld = wp.xyz;
+      vec4 mv = viewMatrix * wp;
+      vView = normalize(-mv.xyz);
+      vN = normalize(transformedNormal);
+      vLip = aLip;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: /* glsl */`
+    uniform float uTime; uniform vec3 uColor; uniform float uBright; uniform float uFadeLow; uniform float uFadeHigh; uniform float uMul;
+    uniform vec3 uLipColor;
+    varying vec3 vN; varying vec3 vView; varying vec3 vWorld; varying float vLip;
+    float hash(vec3 p){ return fract(sin(dot(p, vec3(12.9898,78.233,37.719))) * 43758.5453); }
+    void main() {
+      float fres = pow(1.0 - abs(dot(normalize(vN), vView)), 2.4);
+      float scan = 0.6 + 0.4 * sin(vWorld.y * 900.0 - uTime * 6.0);
+      float sweep = smoothstep(0.0, 0.02, abs(fract(vWorld.y * 3.0 - uTime * 0.25) - 0.5) - 0.48);
+      float speck = step(0.95, hash(floor(vWorld * 400.0) + floor(uTime * 12.0)));
+      float flicker = 0.94 + 0.06 * sin(uTime * 37.0) * sin(uTime * 3.1);
+      float a = (0.10 + 0.75 * fres) * scan + speck * 0.2 + sweep * 0.12 + vLip * (0.28 + 0.35 * fres);
+      float fade = smoothstep(uFadeLow, uFadeHigh, vWorld.y);
+      float dissolve = step(hash(floor(vWorld * 300.0)), fade * 1.4);
+      vec3 col = mix(uColor * (0.5 + 0.5 * fres), uLipColor, vLip * 0.85);
+      gl_FragColor = vec4(col, a * flicker * uBright * uMul * fade * mix(dissolve, 1.0, fade));
+    }`,
+});
+
+holoMat.uniforms = { ...uniforms, uMul: { value: 1 } };
+const wireMat = new THREE.MeshBasicMaterial({ color: 0x6fb8e6, wireframe: true, transparent: true, opacity: 0.03, blending: THREE.AdditiveBlending, depthWrite: false });
+const pointMat = new THREE.PointsMaterial({ color: 0xbfe4fa, size: 0.002, transparent: true, opacity: 0.25, blending: THREE.AdditiveBlending, depthWrite: false });
+
+const dustMat = new THREE.PointsMaterial({ color: 0x9fd2f2, size: 0.0012, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false });
+const bright = document.getElementById('bright');
+function applyBright() {
+  const b = parseFloat(bright.value);
+  uniforms.uBright.value = b;
+  wireMat.opacity = 0.09 * b;
+  pointMat.opacity = 0.7 * b;
+  dustMat.opacity = 0.55 * b;
+}
+bright.addEventListener('input', applyBright);
+applyBright();
+
+let dict = null, faceRoot = null;
+const morphMeshes = [];
+
+new GLTFLoader().loadAsync('face.glb').then(gltf => {
+  faceRoot = gltf.scene;
+  faceRoot.updateMatrixWorld(true);
+  const extras = [];
+  faceRoot.traverse(o => {
+    if (!o.isMesh) return;
+    if (!o.morphTargetDictionary && o.geometry.attributes.position.count === 614) { o.visible = false; return; } // teeth hidden
+    o.material = holoMat;
+    if (o.morphTargetDictionary) markLips(o);
+    if (o.morphTargetDictionary) { morphMeshes.push(o); dict = o.morphTargetDictionary; }
+    if (o.morphTargetDictionary) extras.push(o); // sparkle and wire only on the face skin, not eyes or teeth
+  });
+  scene.add(faceRoot);
+  const box = new THREE.Box3().setFromObject(faceRoot);
+  const c = box.getCenter(new THREE.Vector3()), s = box.getSize(new THREE.Vector3());
+  faceRoot.position.sub(c);
+  for (const o of extras) {
+    const w = new THREE.Mesh(o.geometry, wireMat);
+    const p = new THREE.Points(o.geometry, pointMat);
+    const dust = new THREE.Points(surfaceDust(o.geometry, 14000), dustMat);
+    for (const m of [w, p, dust]) {
+      if (o.morphTargetInfluences) { m.morphTargetInfluences = o.morphTargetInfluences; m.morphTargetDictionary = o.morphTargetDictionary; }
+      o.add(m);
+    }
+  }
+
+  const brain = buildBrain();
+  faceRoot.add(brain);
+  const dist = s.y / (2 * Math.tan(THREE.MathUtils.degToRad(35 / 2))) * 1.3;
+  camera.position.set(0, s.y * 0.04, dist);
+  controls.target.set(0, -s.y * 0.02, 0);
+  controls.minDistance = dist * 0.6; controls.maxDistance = dist * 1.8;
+  setStatus('Idle');
+}).catch(() => {
+  const el = document.getElementById('err'); el.hidden = false;
+  el.textContent = 'The face model did not load. Serve this folder over http (see README) and reload.';
+  setStatus('Offline');
+});
+
+// Lips: the vertices that move most when the mouth puckers. Gives each vertex a 0..1 lip weight.
+function markLips(mesh) {
+  const g = mesh.geometry, idx = mesh.morphTargetDictionary.mouthPucker;
+  const n = g.attributes.position.count, lip = new Float32Array(n);
+  const d = g.morphAttributes.position && g.morphAttributes.position[idx];
+  if (d) {
+    let max = 0; const m = new Float32Array(n);
+    for (let i = 0; i < n; i++) { m[i] = Math.hypot(d.getX(i), d.getY(i), d.getZ(i)); if (m[i] > max) max = m[i]; }
+    for (let i = 0; i < n; i++) { const x = m[i] / max; lip[i] = x < 0.45 ? 0 : Math.min(1, (x - 0.45) / 0.3); }
+    // The mouth cavity sits behind the lips; drop its triangles so only the outer lips show.
+    mesh.updateWorldMatrix(true, false);
+    const W = new Float32Array(n * 3), NZ = new Float32Array(n), v = new THREE.Vector3();
+    const nm = new THREE.Matrix3().getNormalMatrix(mesh.matrixWorld);
+    for (let i = 0; i < n; i++) {
+      v.fromBufferAttribute(g.attributes.position, i).applyMatrix4(mesh.matrixWorld); v.toArray(W, i * 3);
+      NZ[i] = v.fromBufferAttribute(g.attributes.normal, i).applyMatrix3(nm).normalize().z;
+    }
+    const P = { getX: i => W[i * 3], getY: i => W[i * 3 + 1], getZ: i => W[i * 3 + 2] };
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, zf = -Infinity;
+    for (let i = 0; i < n; i++) if (lip[i] > 0.5) { x0 = Math.min(x0, P.getX(i)); x1 = Math.max(x1, P.getX(i)); y0 = Math.min(y0, P.getY(i)); y1 = Math.max(y1, P.getY(i)); zf = Math.max(zf, P.getZ(i)); }
+    const depth = (y1 - y0) * 0.9;
+    const inner = i => { const x = P.getX(i), y = P.getY(i), z = P.getZ(i); const wx = (x1 - x0) * 0.14; return x > x0 - wx && x < x1 + wx && y > y0 - depth * 0.6 && y < y1 + depth * 0.6 && z < zf - depth * 0.2 && NZ[i] < 0.45; };
+    if (g.index) {
+      const src = g.index.array, keep = [];
+      for (let t = 0; t < src.length; t += 3) if (!(inner(src[t]) || inner(src[t + 1]) || inner(src[t + 2]))) keep.push(src[t], src[t + 1], src[t + 2]);
+      g.setIndex(keep);
+    }
+  }
+  g.setAttribute('aLip', new THREE.BufferAttribute(lip, 1));
+}
+
+// ---- Brain: a folded point-cloud brain with neurons and travelling signals ----
+const brainU = { uTime: uniforms.uTime, uBright: uniforms.uBright, uActivity: { value: 0.3 }, uPR: { value: renderer.getPixelRatio() } };
+let brainSim = null;
+function buildBrain() {
+  const group = new THREE.Group();
+  const C = new THREE.Vector3(0, 0.78, -0.55);  // inside the skull, above the eyes (model units)
+  const R = new THREE.Vector3(0.4, 0.48, 0.85);  // one hemisphere's radii
+  const GAP = 0.2;
+  const rand = () => Math.random() * 2 - 1;
+
+  // Cortex surface: two hemispheres with gyri folds, flat on the inner side and the bottom.
+  const N = 6000, pos = new Float32Array(N * 3), rnd = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    const side = i % 2 ? 1 : -1;
+    let v; do { v = new THREE.Vector3(rand(), rand(), rand()); } while (v.lengthSq() > 1 || v.lengthSq() < 0.01);
+    v.normalize();
+    if (v.x * side < 0) v.x *= 0.3;
+    if (v.y < -0.35) v.y = -0.35 + (v.y + 0.35) * 0.35;
+    const fold = 1 + 0.07 * Math.sin(v.x * 17 + v.y * 9) * Math.sin(v.z * 15 - v.y * 11) + 0.03 * Math.sin(v.z * 31 + v.x * 23);
+    pos[i * 3] = C.x + side * GAP * 0.5 + v.x * R.x * fold;
+    pos[i * 3 + 1] = C.y + v.y * R.y * fold;
+    pos[i * 3 + 2] = C.z + v.z * R.z * fold;
+    rnd[i] = Math.random();
+  }
+  const cortexGeo = new THREE.BufferGeometry();
+  cortexGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  cortexGeo.setAttribute('aRnd', new THREE.BufferAttribute(rnd, 1));
+  const cortex = new THREE.Points(cortexGeo, new THREE.ShaderMaterial({
+    uniforms: brainU, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `attribute float aRnd; uniform float uTime, uActivity, uPR; varying float vA;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        float tw = 0.5 + 0.5 * sin(uTime * (1.2 + aRnd * 2.5) + aRnd * 40.0);
+        float wave = smoothstep(0.9, 1.0, sin(position.z * 5.0 + position.y * 2.0 - uTime * (1.2 + 2.5 * uActivity)));
+        vA = 0.18 + 0.25 * tw + wave * (0.3 + 0.7 * uActivity);
+        gl_PointSize = (1.2 + aRnd * 1.6) * (7.0 / -mv.z) * uPR;
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `uniform float uBright; varying float vA;
+      void main() { float d = length(gl_PointCoord - 0.5); if (d > 0.5) discard;
+        gl_FragColor = vec4(0.72, 0.6, 1.0, (1.0 - 2.0 * d) * vA * uBright); }`,
+  }));
+  group.add(cortex);
+
+  // Neurons inside the volume, each wired to its nearest neighbours.
+  const NN = 150, nodes = [];
+  for (let i = 0; i < NN; i++) {
+    const side = i % 2 ? 1 : -1;
+    let v; do { v = new THREE.Vector3(rand(), rand(), rand()); } while (v.lengthSq() > 1);
+    v.multiplyScalar(0.82); if (v.y < -0.3) v.y = -0.3;
+    nodes.push(new THREE.Vector3(C.x + side * GAP * 0.5 + v.x * R.x * 0.9, C.y + v.y * R.y, C.z + v.z * R.z));
+  }
+  const adj = nodes.map(() => []);
+  const edges = new Set();
+  nodes.forEach((a, i) => {
+    nodes.map((b, j) => [j, a.distanceToSquared(b)]).filter(([j]) => j !== i).sort((x, y) => x[1] - y[1]).slice(0, 3)
+      .forEach(([j]) => { const k = i < j ? i + '-' + j : j + '-' + i; if (!edges.has(k)) { edges.add(k); adj[i].push(j); adj[j].push(i); } });
+  });
+  // A few long fibres across the two hemispheres.
+  for (let k = 0; k < 10; k++) { const i = k * 2, j = (k * 7 + 1) % NN; if (nodes[i].x * nodes[j].x < 0) { edges.add(i + '-' + j); adj[i].push(j); adj[j].push(i); } }
+  const ep = [];
+  for (const k of edges) { const [i, j] = k.split('-').map(Number); ep.push(...nodes[i].toArray(), ...nodes[j].toArray()); }
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(ep, 3));
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x8f7fe0, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false });
+  group.add(new THREE.LineSegments(lineGeo, lineMat));
+
+  // Neuron bodies flash when a signal arrives.
+  const nodePos = new Float32Array(NN * 3), nodeGlow = new Float32Array(NN);
+  nodes.forEach((n, i) => n.toArray(nodePos, i * 3));
+  const nodeGeo = new THREE.BufferGeometry();
+  nodeGeo.setAttribute('position', new THREE.BufferAttribute(nodePos, 3));
+  nodeGeo.setAttribute('aGlow', new THREE.BufferAttribute(nodeGlow, 1));
+
+  // Signals: each pulse runs along an edge with a short fading tail.
+  const P = 70, TAIL = 5;
+  const pulses = Array.from({ length: P }, () => { const a = Math.floor(Math.random() * NN); return { a, b: adj[a][0] ?? a, t: Math.random(), speed: 0.6 + Math.random() * 0.8 }; });
+  const pulsePos = new Float32Array(P * TAIL * 3), pulseGlow = new Float32Array(P * TAIL);
+  const pulseGeo = new THREE.BufferGeometry();
+  pulseGeo.setAttribute('position', new THREE.BufferAttribute(pulsePos, 3));
+  pulseGeo.setAttribute('aGlow', new THREE.BufferAttribute(pulseGlow, 1));
+
+  const glowMat = (size, color) => new THREE.ShaderMaterial({
+    uniforms: brainU, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    vertexShader: `attribute float aGlow; uniform float uPR; varying float vG;
+      void main() { vec4 mv = modelViewMatrix * vec4(position, 1.0); vG = aGlow;
+        gl_PointSize = (${size.toFixed(1)} * (0.5 + aGlow)) * (7.0 / -mv.z) * uPR; gl_Position = projectionMatrix * mv; }`,
+    fragmentShader: `uniform float uBright; varying float vG;
+      void main() { float d = length(gl_PointCoord - 0.5); if (d > 0.5) discard;
+        float core = exp(-d * d * 28.0);
+        gl_FragColor = vec4(${color}, core * vG * uBright * 1.4); }`,
+  });
+  group.add(new THREE.Points(nodeGeo, glowMat(4.0, 'vec3(0.8, 0.75, 1.0)')));
+  group.add(new THREE.Points(pulseGeo, glowMat(5.0, 'vec3(0.75, 0.95, 1.0)')));
+
+  const tmp = new THREE.Vector3();
+  brainSim = { lineMat, step(dt, activity) {
+    for (let i = 0; i < NN; i++) nodeGlow[i] = Math.max(0.15, nodeGlow[i] - dt * 1.8);
+    pulses.forEach((p, i) => {
+      const len = Math.max(0.05, nodes[p.a].distanceTo(nodes[p.b]));
+      p.t += dt * p.speed * (0.35 + 1.4 * activity) * 0.5 / len;
+      if (p.t >= 1) {
+        nodeGlow[p.b] = 1.6;
+        const next = adj[p.b].filter(j => j !== p.a);
+        p.a = p.b; p.b = (next.length ? next : adj[p.b])[Math.floor(Math.random() * (next.length || adj[p.b].length))] ?? p.a; p.t = 0;
+      }
+      for (let k = 0; k < TAIL; k++) {
+        const tt = Math.max(0, p.t - k * 0.06);
+        tmp.lerpVectors(nodes[p.a], nodes[p.b], tt).toArray(pulsePos, (i * TAIL + k) * 3);
+        pulseGlow[i * TAIL + k] = (1 - k / TAIL) * (p.t - k * 0.06 > 0 ? 1 : 0) * (0.5 + 0.5 * activity);
+      }
+    });
+    nodeGeo.attributes.aGlow.needsUpdate = true;
+    pulseGeo.attributes.position.needsUpdate = true;
+    pulseGeo.attributes.aGlow.needsUpdate = true;
+  } };
+  return group;
+}
+
+// Even sparkle over the skin: random points on each triangle, weighted by area, carrying the morph targets so they move with the face.
+function surfaceDust(g, count) {
+  const P = g.attributes.position, idx = g.index ? g.index.array : null;
+  const tris = idx ? idx.length / 3 : P.count / 3;
+  const vi = (t, k) => idx ? idx[t * 3 + k] : t * 3 + k;
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3();
+  const cum = new Float64Array(tris); let tot = 0;
+  for (let t = 0; t < tris; t++) {
+    a.fromBufferAttribute(P, vi(t, 0)); b.fromBufferAttribute(P, vi(t, 1)); c.fromBufferAttribute(P, vi(t, 2));
+    tot += b.sub(a).cross(c.sub(a)).length() * 0.5; cum[t] = tot;
+  }
+  const srcs = [P, ...(g.morphAttributes.position || [])];
+  const outs = srcs.map(() => new Float32Array(count * 3));
+  for (let i = 0; i < count; i++) {
+    const r = Math.random() * tot; let lo = 0, hi = tris - 1;
+    while (lo < hi) { const m = (lo + hi) >> 1; if (cum[m] < r) lo = m + 1; else hi = m; }
+    let u = Math.random(), v = Math.random(); if (u + v > 1) { u = 1 - u; v = 1 - v; }
+    const w = 1 - u - v, i0 = vi(lo, 0), i1 = vi(lo, 1), i2 = vi(lo, 2);
+    srcs.forEach((A, s) => {
+      const o = outs[s];
+      o[i * 3] = A.getX(i0) * w + A.getX(i1) * u + A.getX(i2) * v;
+      o[i * 3 + 1] = A.getY(i0) * w + A.getY(i1) * u + A.getY(i2) * v;
+      o[i * 3 + 2] = A.getZ(i0) * w + A.getZ(i1) * u + A.getZ(i2) * v;
+    });
+  }
+  const dg = new THREE.BufferGeometry();
+  dg.setAttribute('position', new THREE.BufferAttribute(outs[0], 3));
+  if (outs.length > 1) { dg.morphAttributes.position = outs.slice(1).map(o => new THREE.BufferAttribute(o, 3)); dg.morphTargetsRelative = g.morphTargetsRelative; }
+  return dg;
+}
+
+function setMorph(name, v) {
+  if (!dict || dict[name] === undefined) return;
+  for (const m of morphMeshes) m.morphTargetInfluences[dict[name]] = v;
+}
+
+// ---- Visemes: mouth shapes mapped onto the face's ARKit blendshapes ----
+const VISEMES = {
+  sil: {},
+  PP: { mouthClose: 0.55, mouthPressLeft: 0.5, mouthPressRight: 0.5, jawOpen: 0.08 },
+  FF: { mouthRollLower: 0.55, mouthUpperUpLeft: 0.25, mouthUpperUpRight: 0.25, jawOpen: 0.1 },
+  TH: { jawOpen: 0.18, tongueOut: 0.35, mouthStretchLeft: 0.1, mouthStretchRight: 0.1 },
+  DD: { jawOpen: 0.2, mouthStretchLeft: 0.18, mouthStretchRight: 0.18 },
+  kk: { jawOpen: 0.26, mouthStretchLeft: 0.12, mouthStretchRight: 0.12 },
+  CH: { mouthFunnel: 0.5, jawOpen: 0.16, mouthShrugUpper: 0.3 },
+  SS: { jawOpen: 0.07, mouthStretchLeft: 0.35, mouthStretchRight: 0.35, mouthSmileLeft: 0.15, mouthSmileRight: 0.15 },
+  nn: { jawOpen: 0.14, mouthStretchLeft: 0.1, mouthStretchRight: 0.1 },
+  RR: { mouthPucker: 0.45, jawOpen: 0.15 },
+  aa: { jawOpen: 0.6, mouthLowerDownLeft: 0.3, mouthLowerDownRight: 0.3 },
+  E:  { jawOpen: 0.35, mouthStretchLeft: 0.3, mouthStretchRight: 0.3, mouthSmileLeft: 0.15, mouthSmileRight: 0.15 },
+  I:  { jawOpen: 0.22, mouthSmileLeft: 0.45, mouthSmileRight: 0.45 },
+  O:  { jawOpen: 0.42, mouthFunnel: 0.6 },
+  U:  { jawOpen: 0.15, mouthPucker: 0.8, mouthFunnel: 0.2 },
+};
+const LABEL = { sil: '–', PP: 'M B P', FF: 'F V', TH: 'TH', DD: 'T D L', kk: 'K G', CH: 'CH SH', SS: 'S Z', nn: 'N', RR: 'R W', aa: 'AH', E: 'EH', I: 'EE', O: 'OH', U: 'OO' };
+// facecap uses "_L/_R" names; map the readable names above to the model's.
+const MORPH_ALIAS = n => n.replace(/Left$/, '_L').replace(/Right$/, '_R');
+const ALL_MORPHS = [...new Set(Object.values(VISEMES).flatMap(v => Object.keys(v)))];
+const weights = Object.fromEntries(ALL_MORPHS.map(k => [k, 0]));
+
+// Letters and common spellings to visemes (rough English grapheme rules).
+const DIGRAPHS = [
+  ['tion', ['SS', 'U', 'nn']], ['ough', ['O']], ['igh', ['aa', 'I']],
+  ['th', ['TH']], ['sh', ['CH']], ['ch', ['CH']], ['ph', ['FF']], ['wh', ['U']], ['ck', ['kk']], ['ng', ['nn']], ['qu', ['kk', 'U']],
+  ['oo', ['U']], ['ee', ['I']], ['ea', ['I']], ['ou', ['O', 'U']], ['ow', ['O', 'U']], ['ai', ['E', 'I']], ['ay', ['E', 'I']], ['oi', ['O', 'I']], ['oy', ['O', 'I']], ['au', ['O']], ['aw', ['O']], ['er', ['RR']], ['ir', ['RR']], ['ur', ['RR']],
+];
+const SINGLE = { a: 'aa', e: 'E', i: 'I', o: 'O', u: 'U', y: 'I', b: 'PP', m: 'PP', p: 'PP', f: 'FF', v: 'FF', t: 'DD', d: 'DD', l: 'DD', n: 'nn', k: 'kk', g: 'kk', c: 'kk', q: 'kk', x: 'kk', s: 'SS', z: 'SS', j: 'CH', r: 'RR', w: 'U', h: 'kk' };
+const VOWELS = new Set(['aa', 'E', 'I', 'O', 'U']);
+
+function wordToVisemes(word) {
+  let w = word.toLowerCase().replace(/[^a-z]/g, '');
+  if (w.length > 3 && w.endsWith('e') && !/[aeiou]e$/.test(w)) w = w.slice(0, -1); // silent e
+  const out = [];
+  let i = 0;
+  outer: while (i < w.length) {
+    for (const [g, v] of DIGRAPHS) if (w.startsWith(g, i)) { out.push(...v); i += g.length; continue outer; }
+    const v = SINGLE[w[i]]; if (v && out[out.length - 1] !== v) out.push(v);
+    i++;
+  }
+  return out;
+}
+
+// A timeline of { t, v } entries, in seconds relative to timelineStart.
+let timeline = [], timelineStart = 0, timelineEnd = 0;
+const now = () => performance.now() / 1000;
+
+function scheduleWord(word, startAt, rate) {
+  const vs = wordToVisemes(word);
+  if (!vs.length) return startAt;
+  let t = startAt;
+  for (const v of vs) {
+    const d = (VOWELS.has(v) ? 0.11 : v === 'PP' ? 0.08 : 0.065) / rate;
+    timeline.push({ t, v }); t += d;
+  }
+  timeline.push({ t, v: 'sil' });
+  return t;
+}
+
+function scheduleText(text, rate, from = 0) {
+  let t = from;
+  for (const word of text.split(/\s+/)) {
+    t = scheduleWord(word, t, rate) + 0.05 / rate;
+    if (/[,.;:!?]$/.test(word)) t += 0.22 / rate;
+  }
+  return t;
+}
+
+function currentViseme() {
+  if (!timeline.length) return 'sil';
+  const t = now() - timelineStart;
+  if (t > timelineEnd + 0.15) return 'sil';
+  let v = 'sil';
+  for (const e of timeline) { if (e.t <= t) v = e.v; else break; }
+  return v;
+}
+
+// ---- Speak: browser voice + text-driven visemes, re-synced on each word boundary ----
+const RATE = 1;
+let speaking = false, usingBoundary = false;
+document.getElementById('speak').addEventListener('click', () => {
+  const text = document.getElementById('say').value.trim();
+  if (!text) return;
+  stopAudio();
+  const words = [...text.matchAll(/\S+/g)].map(m => ({ word: m[0], index: m.index }));
+
+  const silent = () => {
+    timeline = []; timelineStart = now(); timelineEnd = scheduleText(text, RATE);
+    speaking = true; setStatus('Speaking (no voice)');
+    setTimeout(() => { speaking = false; setStatus('Idle'); }, timelineEnd * 1000 + 200);
+  };
+  if (!('speechSynthesis' in window)) return silent();
+
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.rate = RATE; u.pitch = 1.05;
+  const pick = speechSynthesis.getVoices().find(v => /female|samantha|zira|jenny|aria|google uk english female/i.test(v.name));
+  if (pick) u.voice = pick;
+  let started = false;
+  u.onstart = () => {
+    started = true; speaking = true; usingBoundary = false; setStatus('Speaking');
+    timeline = []; timelineStart = now(); timelineEnd = scheduleText(text, RATE);
+  };
+  u.onboundary = e => {
+    if (e.name && e.name !== 'word') return;
+    // Re-anchor the timeline to the word the voice actually reached.
+    const w = words.find(x => x.index >= e.charIndex) || words[words.length - 1];
+    if (!w) return;
+    usingBoundary = true;
+    timeline = []; timelineStart = now();
+    timelineEnd = scheduleWord(w.word, 0, RATE);
+  };
+  u.onend = u.onerror = () => { speaking = false; setStatus('Idle'); timeline = []; };
+  speechSynthesis.speak(u);
+  setTimeout(() => { if (!started) silent(); }, 800);
+});
+
+// ---- Play audio: frequency-band analysis picks the mouth shape live ----
+let audioCtx, audioEl, analyser, freq, wave;
+function stopAudio() { if (audioEl) { audioEl.pause(); audioEl = null; } analyser = null; }
+document.getElementById('audio').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  if ('speechSynthesis' in window) speechSynthesis.cancel();
+  stopAudio();
+  audioCtx = audioCtx || new AudioContext();
+  audioEl = new Audio(URL.createObjectURL(f));
+  const src = audioCtx.createMediaElementSource(audioEl);
+  analyser = audioCtx.createAnalyser(); analyser.fftSize = 2048; analyser.smoothingTimeConstant = 0.5;
+  freq = new Uint8Array(analyser.frequencyBinCount); wave = new Uint8Array(analyser.fftSize);
+  src.connect(analyser); analyser.connect(audioCtx.destination);
+  audioCtx.resume(); audioEl.play();
+  timeline = [];
+  setStatus('Speaking');
+  audioEl.onended = () => { analyser = null; setStatus('Idle'); };
+  e.target.value = '';
+});
+
+let prevVol = 0;
+function audioViseme() {
+  analyser.getByteTimeDomainData(wave);
+  let sum = 0; for (const v of wave) { const x = (v - 128) / 128; sum += x * x; }
+  const vol = Math.sqrt(sum / wave.length);
+  analyser.getByteFrequencyData(freq);
+  const hz = audioCtx.sampleRate / analyser.fftSize;
+  const band = (a, b) => { let s = 0, n = 0; for (let i = Math.floor(a / hz); i < Math.min(freq.length, b / hz); i++) { s += freq[i]; n++; } return n ? s / n / 255 : 0; };
+  const low = band(150, 500), mid = band(500, 1500), high = band(1500, 3500), hiss = band(4000, 9000);
+  const drop = prevVol - vol; prevVol = vol;
+  let v;
+  if (vol < 0.02) v = 'sil';
+  else if (drop > 0.04 && vol < 0.06) v = 'PP';
+  else if (hiss > low * 0.9 && hiss > 0.15) v = 'SS';
+  else if (low > mid * 1.6 && high < low * 0.35) v = 'U';
+  else if (low > mid * 1.2 && high < low * 0.6) v = 'O';
+  else if (high > mid * 0.9) v = 'I';
+  else if (high > mid * 0.6) v = 'E';
+  else v = 'aa';
+  return { v, amt: Math.min(1, vol * 7) };
+}
+
+// ---- Loop ----
+const clock = new THREE.Clock();
+let nextBlink = 2, blinkT = -1, lastLabel = '';
+function tick() {
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  uniforms.uTime.value = t;
+  uniforms.uGlitch.value = reduce ? 0 : (Math.sin(t * 0.7) > 0.93 ? 1 : 0.15);
+
+  let vis = 'sil', amt = 1;
+  if (analyser) ({ v: vis, amt } = audioViseme());
+  else if (speaking || timeline.length) vis = currentViseme();
+
+  const target = VISEMES[vis];
+  const k = Math.min(1, dt * 22);
+  for (const name of ALL_MORPHS) {
+    weights[name] += ((target[name] || 0) * amt - weights[name]) * k;
+    setMorph(MORPH_ALIAS(name), weights[name]);
+  }
+  const talking = !!analyser || speaking;
+  brainU.uActivity.value += ((talking ? 1 : 0.25) - brainU.uActivity.value) * Math.min(1, dt * 3);
+  if (brainSim) { brainSim.step(dt, brainU.uActivity.value); brainSim.lineMat.opacity = 0.14 * uniforms.uBright.value; }
+  const label = LABEL[vis];
+  if (label !== lastLabel) { visEl.textContent = label; lastLabel = label; }
+
+  // Blink
+  if (t > nextBlink && blinkT < 0) blinkT = 0;
+  if (blinkT >= 0) {
+    blinkT += dt; const b = Math.sin(Math.min(1, blinkT / 0.16) * Math.PI);
+    setMorph('eyeBlink_L', b); setMorph('eyeBlink_R', b);
+    if (blinkT > 0.16) { blinkT = -1; nextBlink = t + 2 + Math.random() * 4; }
+  }
+
+  if (faceRoot && !reduce) {
+    faceRoot.rotation.y = Math.sin(t * 0.3) * 0.08;
+    faceRoot.rotation.x = Math.sin(t * 0.21) * 0.03;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(tick);
+}
+tick();
+
+
+</script>
+
+</body>
+</html>
