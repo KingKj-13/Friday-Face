@@ -3,7 +3,10 @@
 A holographic 3D head for the **F.R.I.D.A.Y.** voice assistant, running in the browser with Three.js.
 
 - Hologram look: glowing edge, scanlines, sparkle dots, a faint wireframe, flicker and an occasional glitch
+- A feminine face: softer brow, higher cheekbones, narrower nose, fuller lips, slimmer jaw and chin
+- Eyelids only (no eyeballs or teeth), with a soft glowing line along the lids
 - Glowing lips with lip-sync (15 mouth shapes, such as OH, EE, M/B/P and F/V)
+- A female voice by default, with a **Voice** menu to pick any voice on your device
 - A glowing brain inside the skull: about 150 neurons with signals travelling between them, getting busier while Friday talks
 - Blinks and moves its head on its own; drag to rotate
 - A **Glow** slider for brightness
@@ -22,7 +25,8 @@ To host it free, turn on **GitHub Pages** for this repo (Settings → Pages → 
 
 ## Using it
 
-- **Speak**: the browser reads your text aloud, and the mouth shapes are worked out from the letters and timed to each spoken word. Timing is best in Chrome and Edge.
+- **Speak**: the browser reads your text aloud in a female voice, and the mouth shapes are worked out from the letters and timed to each spoken word. Timing is best in Chrome and Edge.
+- **Voice**: female voices are marked ♀ and listed first; your pick is remembered. For the most natural free voice, use Microsoft Edge and choose Aria or Jenny (Natural).
 - **Play audio**: pick any voice recording; the mouth shape is chosen live from the sound's frequencies and loudness.
 
 ## How it works
@@ -30,7 +34,9 @@ To host it free, turn on **GitHub Pages** for this repo (Settings → Pages → 
 | Part | Where in `index.html` |
 | --- | --- |
 | Hologram shader (glowing edge, scanlines, glitch) | `holoMat` |
-| Lip glow (vertices that move most when the mouth puckers) | `markLips()` |
+| Lip and eyelid glow (vertices that move most when puckering or blinking) | `markLips()` |
+| Feminine reshaping of brow, eyes, cheekbones, nose, lips and jaw | `sculptFeminine()` |
+| Female voice selection | `voiceScore()`, `loadVoices()` |
 | Even sparkle dots over the skin, moving with the face | `surfaceDust()` |
 | Mouth shapes mapped onto the face's 52 expression shapes | `VISEMES` |
 | Text to mouth shapes | `wordToVisemes()`, `scheduleText()` |
