@@ -49,3 +49,11 @@ Three.js 0.160.0 loads from the jsDelivr CDN; there is no build step.
 
 - Face model: "facecap" by **Bannaflak**, licensed [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), from the [three.js examples](https://github.com/mrdoob/three.js/tree/dev/examples/models/gltf). In `face.glb` its textures and compression were removed; the mesh and expression shapes are unchanged.
 - [Three.js](https://threejs.org/) (MIT)
+
+## Agent Office Hub
+
+`office/index.html` is a separate page: an isometric 3D office where bean-shaped AI agents work at cubicle desks (with headphones on) or play pool, table tennis and basketball, work out, drink coffee and rest. Click an agent to see its tasks and log, or edit its name, role, type (worker or relax only) and favourite activity.
+
+With GitHub Pages on, it is at `https://kingkj-13.github.io/friday-face/office/`. It needs no build step and loads Three.js from a CDN.
+
+Your own code can drive it from the page with `window.agentOffice` (`create`, `update`, `assignRole`, `call`, `log`, `complete`, `remove`, `list`), or from a parent page that embeds it in an iframe with `postMessage({agentOffice: "create", args: [{...}]})`.
