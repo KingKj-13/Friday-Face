@@ -65,6 +65,7 @@ button:focus-visible, .file:focus-within, input:focus-visible { outline: 1px sol
 .file input { position: absolute; width: 1px; height: 1px; opacity: 0; }
 .glow { display: flex; align-items: center; gap: 8px; font: 600 11px var(--f-display); letter-spacing: 0.12em; text-transform: uppercase; color: var(--holo-dim); }
 .glow input { width: 110px; accent-color: var(--holo); }
+.glow select { max-width: 170px; min-width: 0; background: var(--void); color: var(--ink); border: 1px solid var(--line); font: 12px var(--f-mono); padding: 7px 6px; }
 .note { max-width: 760px; margin: 8px auto 0; font-size: 10.5px; color: var(--holo-dim); line-height: 1.5; pointer-events: auto; }
 .note a { color: var(--holo-dim); }
 #err { position: fixed; inset: 40% 16px auto; text-align: center; color: var(--holo); font-size: 13px; }
@@ -82,6 +83,7 @@ button:focus-visible, .file:focus-within, input:focus-visible { outline: 1px sol
     <input id="say" type="text" value="Good evening boss. All systems are online, and the suit is ready." aria-label="Text for Friday to say">
     <button id="speak" type="button">Speak</button>
     <label class="file">Play audio<input id="audio" type="file" accept="audio/*"></label>
+    <label class="glow" for="voice">Voice <select id="voice" aria-label="Friday's voice"><option>Loading voices</option></select></label>
     <label class="glow" for="bright">Glow <input id="bright" type="range" min="0.2" max="1.5" step="0.05" value="0.6"></label>
   </div>
   <p class="note">Drag to rotate. "Speak" reads your text and shapes the mouth from its letters and sounds. "Play audio" lip-syncs any voice file from its frequencies. Face model: “facecap” by Bannaflak, <a href="https://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a>, via the three.js examples.</p>
@@ -132,7 +134,7 @@ const uniforms = {
   uColor: { value: new THREE.Color(0x6fb8e6) },
   uGlitch: { value: 0 },
   uBright: { value: 0.6 },
-  uLipColor: { value: new THREE.Color(0xb9d8ff) },
+  uLipColor: { value: new THREE.Color(0xd9c9ff) },
   uFadeLow: { value: -1000 },
   uFadeHigh: { value: -999 },
 };
@@ -178,7 +180,7 @@ const holoMat = new THREE.ShaderMaterial({
       float a = (0.10 + 0.75 * fres) * scan + speck * 0.2 + sweep * 0.12 + vLip * (0.28 + 0.35 * fres);
       float fade = smoothstep(uFadeLow, uFadeHigh, vWorld.y);
       float dissolve = step(hash(floor(vWorld * 300.0)), fade * 1.4);
-      vec3 col = mix(uColor * (0.5 + 0.5 * fres), uLipColor, vLip * 0.85);
+      vec3 col = mix(uColor * (0.5 + 0.5 * fres), uLipColor, vLip * 0.7);
       gl_FragColor = vec4(col, a * flicker * uBright * uMul * fade * mix(dissolve, 1.0, fade));
     }`,
 });
@@ -205,12 +207,18 @@ const morphMeshes = [];
 new GLTFLoader().loadAsync('face.glb').then(gltf => {
   faceRoot = gltf.scene;
   faceRoot.updateMatrixWorld(true);
+  const eyeCentres = [];
+  // Eyeball meshes come first in the file; collect them before the skin is sculpted.
+  faceRoot.traverse(o => { if (o.isMesh && !o.morphTargetDictionary && o.geometry.attributes.position.count === 530) eyeCentres.push(new THREE.Box3().setFromObject(o).getCenter(new THREE.Vector3())); });
+  window.__eyes = eyeCentres;
   const extras = [];
   faceRoot.traverse(o => {
     if (!o.isMesh) return;
-    if (!o.morphTargetDictionary && o.geometry.attributes.position.count === 614) { o.visible = false; return; } // teeth hidden
+    if (!o.morphTargetDictionary) { // eyeballs and teeth hidden; only the lids remain
+      o.visible = false; return;
+    }
     o.material = holoMat;
-    if (o.morphTargetDictionary) markLips(o);
+    if (o.morphTargetDictionary) { markLips(o); sculptFeminine(o); }
     if (o.morphTargetDictionary) { morphMeshes.push(o); dict = o.morphTargetDictionary; }
     if (o.morphTargetDictionary) extras.push(o); // sparkle and wire only on the face skin, not eyes or teeth
   });
@@ -245,11 +253,13 @@ new GLTFLoader().loadAsync('face.glb').then(gltf => {
 function markLips(mesh) {
   const g = mesh.geometry, idx = mesh.morphTargetDictionary.mouthPucker;
   const n = g.attributes.position.count, lip = new Float32Array(n);
+  let lipGlow = new Float32Array(n);
   const d = g.morphAttributes.position && g.morphAttributes.position[idx];
   if (d) {
     let max = 0; const m = new Float32Array(n);
     for (let i = 0; i < n; i++) { m[i] = Math.hypot(d.getX(i), d.getY(i), d.getZ(i)); if (m[i] > max) max = m[i]; }
     for (let i = 0; i < n; i++) { const x = m[i] / max; lip[i] = x < 0.45 ? 0 : Math.min(1, (x - 0.45) / 0.3); }
+    lipGlow = lip.map(x => x < 0.75 ? 0 : (x - 0.75) / 0.25);
     // The mouth cavity sits behind the lips; drop its triangles so only the outer lips show.
     mesh.updateWorldMatrix(true, false);
     const W = new Float32Array(n * 3), NZ = new Float32Array(n), v = new THREE.Vector3();
@@ -269,7 +279,84 @@ function markLips(mesh) {
       g.setIndex(keep);
     }
   }
-  g.setAttribute('aLip', new THREE.BufferAttribute(lip, 1));
+  const glow = lipGlow;
+  // Eyelid line: the vertices that move most when blinking glow like eyeliner.
+  const bl = ['eyeBlink_L', 'eyeBlink_R'].map(k => g.morphAttributes.position[mesh.morphTargetDictionary[k]]);
+  let bmax = 0; const bm = new Float32Array(n);
+  for (let i = 0; i < n; i++) { bm[i] = Math.max(...bl.map(a => Math.hypot(a.getX(i), a.getY(i), a.getZ(i)))); bmax = Math.max(bmax, bm[i]); }
+  for (let i = 0; i < n; i++) { const x = bm[i] / bmax; if (x > 0.5) glow[i] = Math.max(glow[i], Math.min(1, (x - 0.5) / 0.25)); }
+  g.setAttribute('aLip', new THREE.BufferAttribute(glow, 1));
+  g.userData.lipShape = lip; // broad lip weights, used for reshaping
+}
+
+// Feminine reshaping: soft brow, lifted cheekbones, narrower nose, fuller lips, slimmer jaw and chin.
+// Works in world space with smooth falloffs around landmarks found on the mesh, then writes back to the mesh's own space.
+function sculptFeminine(mesh) {
+  const eyes = (window.__eyes || []).slice().sort((a, b) => a.x - b.x);
+  if (eyes.length < 2) return;
+  const g = mesh.geometry, A = g.attributes.position, L = g.userData.lipShape, n = A.count;
+  mesh.updateWorldMatrix(true, false);
+  const M = mesh.matrixWorld, Mi = M.clone().invert();
+  const W = []; const v = new THREE.Vector3();
+  for (let i = 0; i < n; i++) W.push(v.fromBufferAttribute(A, i).applyMatrix4(M).clone());
+  const [eL, eR] = eyes, u = eR.x - eL.x, eyeY = (eL.y + eR.y) / 2, eyeZ = (eL.z + eR.z) / 2;
+  // Lips: centre of the lip-weighted vertices (eyelids are excluded by height).
+  let lc = new THREE.Vector3(), lw = 0, lipTop = -Infinity, lipBot = Infinity;
+  for (let i = 0; i < n; i++) if (L[i] > 0.5 && W[i].y < eyeY - 0.8 * u) { lc.add(W[i]); lw++; lipTop = Math.max(lipTop, W[i].y); lipBot = Math.min(lipBot, W[i].y); }
+  lc.divideScalar(lw || 1);
+  let nose = null, chinY = Infinity, front = -Infinity;
+  for (const p of W) {
+    if (Math.abs(p.x) < 0.25 * u && p.y < eyeY && p.y > lipTop && (!nose || p.z > nose.z)) nose = p.clone();
+    if (Math.abs(p.x) < 0.3 * u && p.z > lc.z - 0.8 * u && p.y < chinY) chinY = p.y;
+    front = Math.max(front, p.z);
+  }
+  const gs = (p, c, rx, ry, rz) => Math.exp(-(((p.x - c.x) / rx) ** 2 + ((p.y - c.y) / ry) ** 2 + ((p.z - c.z) / rz) ** 2));
+  const ss = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+  const lipH = Math.max(0.05 * u, lipTop - lipBot);
+
+  for (let i = 0; i < n; i++) {
+    const p = W[i], q = p.clone(), isLid = p.y > eyeY - 0.5 * u;
+    const facing = ss(eyeZ - 1.2 * u, eyeZ, p.z); // only the front of the head
+    // Brow ridge: flatter and slightly higher.
+    for (const e of eyes) {
+      const w = gs(p, new THREE.Vector3(e.x, eyeY + 0.32 * u, e.z + 0.1 * u), 0.5 * u, 0.2 * u, 0.6 * u) * facing;
+      q.z -= 0.07 * u * w; q.y += 0.035 * u * w;
+      // Bigger, slightly lifted eye opening with a gentle upturn at the outer corner.
+      const we = gs(p, e, 0.42 * u, 0.28 * u, 0.6 * u) * facing;
+      q.x += (p.x - e.x) * 0.1 * we; q.y += (p.y - e.y) * 0.12 * we;
+      const outer = Math.max(0, (p.x - e.x) * Math.sign(e.x)) / (0.4 * u);
+      q.y += 0.04 * u * we * Math.min(1, outer);
+      // Cheekbones: higher and fuller, just below and outside each eye.
+      const cb = new THREE.Vector3(e.x + Math.sign(e.x) * 0.22 * u, eyeY - 0.42 * u, e.z - 0.05 * u);
+      const wc = gs(p, cb, 0.35 * u, 0.25 * u, 0.45 * u) * facing;
+      q.x += Math.sign(e.x) * 0.05 * u * wc; q.z += 0.06 * u * wc; q.y += 0.03 * u * wc;
+    }
+    // Nose: narrower bridge and nostrils, a little smaller and lifted at the tip.
+    if (nose) {
+      const wn = gs(p, new THREE.Vector3(0, (nose.y + eyeY) / 2, nose.z), 0.55 * u, 0.75 * u, 0.9 * u) * facing;
+      q.x -= p.x * 0.28 * wn;
+      const wt = gs(p, nose, 0.3 * u, 0.25 * u, 0.4 * u);
+      q.z -= 0.04 * u * wt; q.y += 0.025 * u * wt;
+    }
+    // Lips: fuller, pushed forward, with a soft cupid's bow.
+    if (lw && !isLid) {
+      const wl = gs(p, lc, 0.75 * u, 0.4 * u, 0.6 * u) * facing;
+      const lipW = Math.max(L[i], 0.6 * wl * gs(p, lc, 0.55 * u, 0.22 * u, 0.5 * u));
+      q.y += (p.y - lc.y) * 0.45 * lipW;
+      q.z += 0.06 * u * lipW;
+      q.x -= (p.x - lc.x) * 0.06 * lipW;
+    }
+    // Jaw and chin: slimmer below the mouth, tapering to a smaller chin.
+    const low = ss(lc.y + 0.2 * u, chinY, p.y);
+    q.x -= p.x * 0.13 * low;
+    q.y += 0.06 * u * low * gs(p, new THREE.Vector3(0, chinY, front), 0.6 * u, 0.5 * u, 1.2 * u);
+    // Overall: a slightly narrower face.
+    q.x -= p.x * 0.04;
+    q.applyMatrix4(Mi);
+    A.setXYZ(i, q.x, q.y, q.z);
+  }
+  A.needsUpdate = true;
+  mesh.frustumCulled = false; // keep the loader's bounds; recomputing them with morph targets inflates the box
 }
 
 // ---- Brain: a folded point-cloud brain with neurons and travelling signals ----
@@ -507,6 +594,37 @@ function currentViseme() {
   return v;
 }
 
+// ---- Voice: pick a female voice, best quality first; the viewer can change it ----
+const FEMALE = /female|woman|samantha|victoria|karen|moira|tessa|fiona|serena|allison|ava|susan|zira|aria|jenny|sonia|libby|natasha|michelle|emma|clara|nancy|sara|ana|heera|neerja|swara|kalpana|veena|lekha|google uk english female|google us english|joanna|salli|kimberly|amy|olivia/i;
+const MALE = /\bmale\b|david|mark|george|guy|ryan|daniel|alex|fred|thomas|james|ravi|prabhat|christopher|eric|roger|brian|matthew|google uk english male/i;
+const voiceSel = document.getElementById('voice');
+let voices = [];
+function voiceScore(v) {
+  let sc = 0;
+  if (FEMALE.test(v.name) && !MALE.test(v.name.replace(/female/i, ''))) sc += 100;
+  if (/^en/i.test(v.lang)) sc += 20;
+  if (/natural|neural|online|premium|enhanced/i.test(v.name)) sc += 15;
+  if (/google/i.test(v.name)) sc += 5;
+  return sc;
+}
+function loadVoices() {
+  if (!('speechSynthesis' in window)) { voiceSel.innerHTML = '<option>No voices in this browser</option>'; return; }
+  voices = speechSynthesis.getVoices().slice().sort((a, b) => voiceScore(b) - voiceScore(a));
+  if (!voices.length) return;
+  let saved = null; try { saved = localStorage.getItem('friday-voice'); } catch (e) {}
+  voiceSel.innerHTML = '';
+  voices.forEach((v, i) => {
+    const o = document.createElement('option');
+    o.value = v.name; o.textContent = (voiceScore(v) >= 100 ? '♀ ' : '') + v.name.replace(/^(Microsoft|Google)\s+/, '') + ' (' + v.lang + ')';
+    voiceSel.appendChild(o);
+  });
+  voiceSel.value = voices.some(v => v.name === saved) ? saved : voices[0].name;
+}
+voiceSel.addEventListener('change', () => { try { localStorage.setItem('friday-voice', voiceSel.value); } catch (e) {} });
+function chosenVoice() { if (!voices.length) loadVoices(); return voices.find(v => v.name === voiceSel.value) || voices[0] || null; }
+if ('speechSynthesis' in window) { loadVoices(); speechSynthesis.addEventListener('voiceschanged', loadVoices); }
+else loadVoices();
+
 // ---- Speak: browser voice + text-driven visemes, re-synced on each word boundary ----
 const RATE = 1;
 let speaking = false, usingBoundary = false;
@@ -525,9 +643,9 @@ document.getElementById('speak').addEventListener('click', () => {
 
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
-  u.rate = RATE; u.pitch = 1.05;
-  const pick = speechSynthesis.getVoices().find(v => /female|samantha|zira|jenny|aria|google uk english female/i.test(v.name));
-  if (pick) u.voice = pick;
+  u.rate = RATE; u.pitch = 1.12;
+  const pick = chosenVoice();
+  if (pick) { u.voice = pick; u.lang = pick.lang; }
   let started = false;
   u.onstart = () => {
     started = true; speaking = true; usingBoundary = false; setStatus('Speaking');
